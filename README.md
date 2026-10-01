@@ -6,7 +6,7 @@ This project implements machine learning models (decision trees and baseline cla
 
 ## Features & Preprocessing
 
-- **Categorical Encoding:** Integer mapping for `Category` and `EntityType`.
+- **Categorical Encoding:** One-hot encoding for `Category` and `EntityType`.
 - **Technique Detection:** Binary encoding of MITRE ATT&CK techniques (`MitreTechniques`).
 - **Temporal Features:** Time difference from previous detector alert (`TimeLastAlert`), hour of day (`HourOfDay`), day of week (`DayOfWeek`), and weekend flag (`IsWeekend`).
 - **Entity Operational Frequency:** 24-hour rolling alert counts across key entity identifiers (`DetectorId`, `AccountSid`, `DeviceId`, `IpAddress`, `ApplicationId`).

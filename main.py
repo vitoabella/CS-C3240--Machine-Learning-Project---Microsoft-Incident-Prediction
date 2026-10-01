@@ -9,7 +9,7 @@ from sklearn.metrics import classification_report, f1_score
 
 # When debug is True, only load a subset of rows to iterate quickly
 debug = True
-sample_nrows = 100000 if debug else None
+sample_nrows = 10000 if debug else None
 
 data_path = Path(__file__).parent / "GUIDE_Train.csv"
 print(f"Loading data from {data_path.name} (debug={debug}, nrows={sample_nrows})...")
@@ -32,31 +32,22 @@ keep_columns = [
     "DeviceId", # unique identifier for the device that the alert is associated with.
     "IpAddress", # IP address of the device that the alert is associated with.
     "ApplicationId", # unique identifier for the application that the alert is associated with.
+    "IncidentGrade", # customer-provided triage label (target).
 ]
 
 X_train = df[keep_columns].copy()
-y_train = df["IncidentGrade"].copy() # customer-provided triage label.
 
 # ======================================================================================
 # Engineer the features
 
 ## Map categorical features to numerical features
-### Get unique values of 'Category' and map to integers
-category_mapping = {cat: i for i, cat in enumerate(X_train["Category"].dropna().unique())}
-X_train["Category"] = X_train["Category"].map(category_mapping).fillna(-1).astype(int)
-
-### Get unique values of 'EntityType' and map to integers
-entity_type_mapping = {et: i for i, et in enumerate(X_train["EntityType"].dropna().unique())}
-X_train["EntityType"] = X_train["EntityType"].map(entity_type_mapping).fillna(-1).astype(int)
-
 ### Map 'MitreTechniques': 0 if missing/empty, 1 if present
 X_train["MitreTechniques"] = X_train["MitreTechniques"].notna().astype(int)
 
-## ======================================================================================
 ## Time-related features (We will characterize the patterns of alerts over time according to normal business operating hours.)
-### TimeLastAlert (Time since last alert in seconds for each DetectorId; fill first alert with -1)
+### TimeLastAlert (Time since last alert in seconds for each DetectorId)
 X_train["TimeLastAlert"] = (
-    X_train.groupby("DetectorId")["Timestamp"].diff().dt.total_seconds().fillna(-1)
+    X_train.groupby("DetectorId")["Timestamp"].diff().dt.total_seconds()
 )
 ### HourOfDay
 X_train["HourOfDay"] = X_train["Timestamp"].dt.hour.astype(int)
@@ -65,9 +56,8 @@ X_train["DayOfWeek"] = X_train["Timestamp"].dt.dayofweek.astype(int)
 ### IsWeekend
 X_train["IsWeekend"] = X_train["Timestamp"].dt.dayofweek.isin([5, 6]).astype(int)
 
-## ======================================================================================
-## Frequency-related features (Count occurrences of each unique value in the past X hours until the alert)
-## We will be using a rolling window of 24 hours to characterize the daily operational patterns of the entities.
+## Frequency-related features (Count occurrences of each unique value in the past <time_window> hours until the alert)
+## We will be using a rolling window of 24 hours to characterize the daily operational patterns of the features.
 time_window = "24h"
 frequency_columns = [
     "DetectorId",
@@ -89,8 +79,10 @@ for column in frequency_columns:
     )
     X_train[f"{column}AlertFrequency"] = rolling_counts.fillna(0).astype("int64")
 
-## ======================================================================================
-## Final Processing - Drop the raw identifier and timestamp features
+## Final Processing - Drop first alert per detector (no prior alert) and drop raw identifier features
+X_train = X_train.dropna(subset=["TimeLastAlert"]).reset_index(drop=True)
+y_train = X_train.pop("IncidentGrade")
+
 X_train = X_train.drop(
     columns=[
         "Timestamp",
@@ -111,28 +103,56 @@ print(X_train.info())
 print("\n--- Unique values per feature ---")
 print(X_train.nunique())
 
-
 # =======================================================================================
-# Plot feature distributions (sample up to 50k to ensure fast rendering)
-feature_columns = X_train.select_dtypes(include=np.number).columns
+# Plot feature distributions
+# Plots display distinct category/value distributions as bar graphs (without one-hot explosion)
+feature_columns = list(X_train.columns)
 n_columns = 3
 n_rows = int(np.ceil(len(feature_columns) / n_columns))
 
-fig, axes = plt.subplots(n_rows, n_columns, figsize=(5 * n_columns, 4 * n_rows))
+fig, axes = plt.subplots(n_rows, n_columns, figsize=(5.5 * n_columns, 4.5 * n_rows))
 axes = np.atleast_1d(axes).ravel()
 
-plot_sample = X_train.sample(n=min(len(X_train), 50000), random_state=42)
+plot_sample = X_train
 
 for ax, feature in zip(axes, feature_columns):
     values = plot_sample[feature].dropna()
-    sns.histplot(values, bins=30, ax=ax)
-    ax.set_title(feature)
-    ax.set_xlabel("Value")
-    ax.set_ylabel("Count")
+    if feature == "TimeLastAlert":
+        # TimeLastAlert ranges from seconds to months; bin into intuitive operational recency buckets
+        bins = [-np.inf, 60, 300, 1800, 3600, 21600, 86400, 604800, np.inf]
+        labels = ["< 1m", "1-5m", "5-30m", "30m-1h", "1-6h", "6-24h", "1-7d", "> 7d"]
+        binned = pd.cut(values, bins=bins, labels=labels)
+        counts = binned.value_counts(sort=False)
+        ax.bar(range(len(counts)), counts.values, color="steelblue", edgecolor="black", alpha=0.8)
+        ax.set_xticks(range(len(counts)))
+        ax.set_xticklabels(counts.index.astype(str), rotation=45, ha="right", fontsize=8)
+        ax.set_title("TimeLastAlert (Recency Buckets)")
+        ax.set_xlabel("Elapsed Time")
+        ax.set_ylabel("Count")
+    elif not pd.api.types.is_numeric_dtype(values) or values.nunique() <= 24:
+        # Discrete / Categorical: bar graph showing frequency of each distinct value/category
+        counts = values.value_counts().sort_index() if pd.api.types.is_numeric_dtype(values) else values.value_counts()
+        ax.bar(range(len(counts)), counts.values, color="steelblue", edgecolor="black", alpha=0.8)
+        ax.set_xticks(range(len(counts)))
+        ax.set_xticklabels(counts.index.astype(str), rotation=45 if values.nunique() > 6 else 0, ha="right", fontsize=8)
+        ax.set_title(feature)
+        ax.set_xlabel("Value / Category")
+        ax.set_ylabel("Count")
+    else:
+        # Continuous / High-cardinality counts: binned bar chart (histogram)
+        sns.histplot(values, bins=25, ax=ax, color="steelblue", edgecolor="black", alpha=0.8)
+        ax.set_title(feature)
+        ax.set_xlabel("Value")
+        ax.set_ylabel("Count")
 
 for ax in axes[len(feature_columns):]:
     ax.remove()
 
 fig.suptitle("Feature distributions (Sampled)", fontsize=16)
-fig.tight_layout()
+fig.tight_layout(h_pad=3.0, w_pad=1.5)
 plt.show()
+
+# =======================================================================================
+# One-hot encode categorical features for Decision Tree model
+X_train = pd.get_dummies(X_train, columns=["Category", "EntityType"], dtype=int)
+print(f"\nFinal one-hot encoded features shape for model: {X_train.shape}")
