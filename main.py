@@ -8,10 +8,10 @@ from sklearn.metrics import classification_report, f1_score
 
 
 # When debug is True, only load a subset of rows to iterate quickly
-debug = True
+debug = False
 sample_nrows = 10000 if debug else None
 
-data_path = Path(__file__).parent / "GUIDE_Train.csv"
+data_path = Path(__file__).parent / "GUIDE_Test.csv"
 print(f"Loading data from {data_path.name} (debug={debug}, nrows={sample_nrows})...")
 df = pd.read_csv(data_path, nrows=sample_nrows)
 
@@ -103,6 +103,9 @@ print(X_train.info())
 print("\n--- Unique values per feature ---")
 print(X_train.nunique())
 
+print("\n--- Target (IncidentGrade) Distribution ---")
+print(y_train.value_counts())
+
 # =======================================================================================
 # Plot feature distributions
 # Plots display distinct category/value distributions as bar graphs (without one-hot explosion)
@@ -150,6 +153,40 @@ for ax in axes[len(feature_columns):]:
 
 fig.suptitle("Feature distributions (Sampled)", fontsize=16)
 fig.tight_layout(h_pad=3.0, w_pad=1.5)
+
+# =======================================================================================
+# Plot target (y_train / IncidentGrade) distribution
+fig_target, ax_target = plt.subplots(figsize=(6, 4.5))
+target_counts = y_train.value_counts()
+bars = ax_target.bar(
+    target_counts.index.astype(str),
+    target_counts.values,
+    color="steelblue",
+    edgecolor="black",
+    alpha=0.8,
+)
+ax_target.set_title("Target Distribution: IncidentGrade (y_train)", fontsize=13)
+ax_target.set_xlabel("Incident Grade")
+ax_target.set_ylabel("Count")
+
+# Add count and percentage labels on top of each bar
+total_samples = len(y_train)
+for bar in bars:
+    height = bar.get_height()
+    pct = (height / total_samples) * 100
+    ax_target.annotate(
+        f"{int(height):,}\n({pct:.1f}%)",
+        xy=(bar.get_x() + bar.get_width() / 2, height),
+        xytext=(0, 4),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+    )
+
+ax_target.set_ylim(0, max(target_counts.values) * 1.15)
+fig_target.tight_layout()
+
 plt.show()
 
 # =======================================================================================
